@@ -7,7 +7,7 @@ from datetime import datetime
 
 # PDF generation libraries
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 # PDF reading library
@@ -69,12 +69,53 @@ def get_calendar_label(day_num, month_num, year_num):
     return f"{day_num:02d}/{month_num:02d} ({day_name})"
 
 # ----------------------------------------------------
-# ADVANCED MULTI-EMPLOYEE & MULTI-PUNCH PARSING ENGINE
+# UNIVERSAL PARSING ENGINE (PDF & EXCEL)
 # ----------------------------------------------------
 def analyze_master_biometric_pdf(pdf_file, target_month_str):
     master_database = {}
     if pdf_file is None:
         return master_database
+
+    filename = pdf_file.name.lower()
+    
+    if filename.endswith(('.xlsx', '.xls')):
+        try:
+            df = pd.read_excel(pdf_file)
+            df.columns = [str(c).strip().lower() for c in df.columns]
+            
+            name_col = next((c for c in df.columns if 'name' in c or 'employee' in c or 'nom' in c), None)
+            date_col = next((c for c in df.columns if 'date' in c or 'time' in c or 'punch' in c or 'horaire' in c), None)
+            
+            if not name_col or not date_col:
+                name_col = df.columns[0] if len(df.columns) > 0 else None
+                date_col = df.columns[1] if len(df.columns) > 1 else None
+
+            if name_col and date_col:
+                for _, row in df.iterrows():
+                    emp_raw = str(row[name_col]).strip()
+                    date_raw = str(row[date_col]).strip()
+                    
+                    ts_match = re.search(r"(\d{2})/(\d{2})/(\d{4})\s+(\d{2}):(\d{2})", date_raw)
+                    if ts_match:
+                        day = int(ts_match.group(1))
+                        m_y = f"{ts_match.group(2)}/{ts_match.group(3)}"
+                        time_str = f"{ts_match.group(4)}:{ts_match.group(5)}"
+                        
+                        if m_y == target_month_str:
+                            emp_name_found = re.sub(r'[\"\',]', '', emp_raw).strip()
+                            if not emp_name_found or emp_name_found.lower() in ['nan', 'null', '']:
+                                continue
+                                
+                            if emp_name_found not in master_database:
+                                master_database[emp_name_found] = {}
+                            if day not in master_database[emp_name_found]:
+                                master_database[emp_name_found][day] = []
+                            if time_str not in master_database[emp_name_found][day]:
+                                master_database[emp_name_found][day].append(time_str)
+            return master_database
+        except Exception as e:
+            st.error(f"Excel Sheet Parsing Alert: {e}")
+            return master_database
 
     try:
         reader = PdfReader(pdf_file)
@@ -108,7 +149,7 @@ def analyze_master_biometric_pdf(pdf_file, target_month_str):
                         master_database[emp_name_found][day].append(time_str)
                         
     except Exception as e:
-        st.error(f"Engine parsing alert: {e}")
+        st.error(f"PDF Engine parsing alert: {e}")
         
     for emp in master_database:
         for day in master_database[emp]:
@@ -120,9 +161,9 @@ def analyze_master_biometric_pdf(pdf_file, target_month_str):
 # MAIN DASHBOARD INTERFACE
 # ----------------------------------------------------
 st.subheader("1. File Ingestion Setup")
-uploaded_pdf = st.file_uploader("Drop machine log PDF report sheet here", type=["pdf"])
+uploaded_file = st.file_uploader("Drop machine log PDF report sheet or Excel logs here", type=["pdf", "xlsx", "xls"])
 
-parsed_master_db = analyze_master_biometric_pdf(uploaded_pdf, target_period)
+parsed_master_db = analyze_master_biometric_pdf(uploaded_file, target_period)
 
 st.markdown("---")
 st.subheader("2. Target Employee Management")
@@ -131,16 +172,9 @@ default_name_value = ""
 if parsed_master_db:
     default_name_value = sorted(list(parsed_master_db.keys()))[0]
 
-selected_employee_key = st.text_input("👤 Employee Name (Extracted automatically or type manually):", value=default_name_value)
+selected_employee_key = st.text_input("👤 Employee Name:", value=default_name_value)
 
-if selected_employee_key:
-    st.success(f"Processing sheet records layout for: **{selected_employee_key}**")
-else:
-    st.warning("⚠️ Please provide an Employee Name to label the calculation profiles.")
-
-# ----------------------------------------------------
-# PROFILE CONFIGURATIONS PANEL
-# ----------------------------------------------------
+# Profile configurations
 col_e1, col_e2 = st.columns(2)
 with col_e1:
     base_salary = st.number_input("Base Monthly Salary (DA)", min_value=0.0, value=40000.0, step=500.0)
@@ -177,11 +211,10 @@ for d in range(1, num_days_in_month + 1):
         }
 
 # ----------------------------------------------------
-# INTERACTIVE DATA MATRIX (Fully Editable Punches)
+# INTERACTIVE DATA MATRIX
 # ----------------------------------------------------
 st.markdown("---")
 st.subheader("3. 📋 Review Logs & Modify Row Profiles")
-st.caption("💡 CRITICAL: The 'Biometric Punches' column is fully editable! You can fix punch mistakes by typing timestamps separated by arrows, e.g., '09:02 -> 13:00 -> 14:15 -> 18:00'.")
 
 initial_rows = []
 for d in range(1, num_days_in_month + 1):
@@ -199,7 +232,7 @@ df_initial = pd.DataFrame(initial_rows)
 edited_df = st.data_editor(
     df_initial,
     use_container_width=True,
-    height=400,
+    height=380,
     disabled=["Date"], 
     column_config={
         "Attendance Status": st.column_config.SelectboxColumn(
@@ -207,26 +240,18 @@ edited_df = st.data_editor(
             options=["Present", "Day Off", "Paid Leave", "Authorized Absence", "Unauthorized Absence"],
             required=True
         ),
-        "Biometric Punches": st.column_config.TextColumn(
-            "Biometric Punches",
-            help="Type directly into this field to manually correct or add timestamps.",
-            required=True
-        ),
-        "Lateness Status": st.column_config.SelectboxColumn(
-            "Lateness Status",
-            options=["Non-Justified", "Justified", "N/A"],
-            required=True
-        )
+        "Biometric Punches": st.column_config.TextColumn("Biometric Punches (Format: IN -> OUT or IN -> LUNCH_OUT -> LUNCH_IN -> OUT)", required=True),
+        "Lateness Status": st.column_config.SelectboxColumn("Lateness Status", options=["Non-Justified", "Justified", "N/A"], required=True)
     },
     hide_index=True,
-    key="attendance_editor_v10"
+    key="attendance_editor_split_v3"
 )
 
 # ----------------------------------------------------
-# LIVE DETAILED CALCULATION PREVIEW ENGINE
+# LIVE FINANCIAL CALCULATION PREVIEW ENGINE
 # ----------------------------------------------------
 st.markdown("---")
-st.subheader("4. 🧮 Live Day-by-Day Financial Breakdown (Verify Before Printing)")
+st.subheader("4. 🧮 Live Calculation Summary Table")
 
 daily_rate = base_salary / float(num_days_in_month)
 hourly_rate = daily_rate / shift_hours
@@ -234,6 +259,10 @@ hourly_rate = daily_rate / shift_hours
 calculated_preview_rows = []
 final_attendance_profile = {}
 total_pay = 0.0
+total_all_bonus = 0.0
+total_all_penalty = 0.0
+total_hours_worked = 0.0
+total_overtime_hours = 0.0
 consecutive_work_days = 0
 
 for idx, row in edited_df.iterrows():
@@ -248,12 +277,16 @@ for idx, row in edited_df.iterrows():
     else:
         punches = sorted([p.strip() for p in raw_punch_str.split("->") if re.match(r"^\d{2}:\d{2}$", p.strip())])
     
-    # Isolate exact clock slots for the printed report data columns
     c_in = punches[0] if len(punches) >= 1 else "--"
-    b_out = punches[1] if len(punches) >= 4 else "--"
-    b_in = punches[2] if len(punches) >= 4 else "--"
+    l_out = punches[1] if len(punches) >= 3 else "--" 
+    l_in = punches[2] if len(punches) >= 4 else "--"
     c_out = punches[-1] if len(punches) >= 2 else "--"
     
+    if len(punches) == 3:
+        c_out = punches[2]
+        l_out = "--"
+        l_in = "--"
+
     late_min = 0
     if status == "Present" and punches:
         try:
@@ -270,43 +303,29 @@ for idx, row in edited_df.iterrows():
     day_earnings = 0.0
     penalty = 0.0
     late_penalty = 0.0
+    day_bonus = 0.0
     break_overstay_minutes = 0
     
     if status == "Present":
         if len(punches) >= 2:
             fmt = "%H:%M"
-            total_seconds_worked = 0
-            
-            for i in range(0, len(punches) - 1, 2):
-                try:
-                    t_in = datetime.strptime(punches[i], fmt)
-                    t_out = datetime.strptime(punches[i+1], fmt)
-                    total_seconds_worked += (t_out - t_in).total_seconds()
-                except:
-                    continue
-            
             if len(punches) >= 4:
                 try:
                     break_out_dt = datetime.strptime(punches[1], fmt)
                     break_in_dt = datetime.strptime(punches[2], fmt)
-                    total_break_seconds = (break_in_dt - break_out_dt).total_seconds()
-                    total_break_minutes = total_break_seconds / 60.0
-                    
+                    total_break_minutes = (break_in_dt - break_out_dt).total_seconds() / 60.0
                     if total_break_minutes > 60.0:
                         break_overstay_minutes = int(total_break_minutes - 60)
-                except:
-                    pass
+                except: pass
             
             try:
                 first_punch = datetime.strptime(punches[0], fmt)
                 last_punch = datetime.strptime(punches[-1], fmt)
-                total_span_hours = (last_punch - first_punch).total_seconds() / 3600.0
-                hours_worked = total_span_hours
+                hours_worked = (last_punch - first_punch).total_seconds() / 3600.0
             except:
                 hours_worked = float(shift_hours)
             
-            if hours_worked == 0:
-                hours_worked = float(shift_hours)
+            if hours_worked == 0: hours_worked = float(shift_hours)
 
             if hours_worked > shift_hours:
                 overtime_hours = hours_worked - shift_hours
@@ -332,7 +351,8 @@ for idx, row in edited_df.iterrows():
                 break_intervals = (extra_break_time + 14) // 15
                 late_penalty += (break_intervals * 1.5 * hourly_rate)
             
-        day_earnings -= late_penalty
+        penalty = late_penalty
+        day_earnings -= penalty
         consecutive_work_days += 1
     else:
         consecutive_work_days = 0
@@ -340,18 +360,22 @@ for idx, row in edited_df.iterrows():
             day_earnings = daily_rate
         elif status == "Authorized Absence":
             day_earnings = 0.0
-            if late_min > 0: late_penalty = (0.25 * hourly_rate)
-            day_earnings -= late_penalty
+            if late_min > 0: penalty = (0.25 * hourly_rate)
+            day_earnings -= penalty
         elif status == "Unauthorized Absence":
             penalty = daily_rate * 0.5
             day_earnings = -penalty
 
     if consecutive_work_days == 7:
-        day_earnings += (daily_rate * bonus_rule)
+        day_bonus = (daily_rate * bonus_rule)
+        day_earnings += day_bonus
         consecutive_work_days = 0
 
     total_pay += day_earnings
-    total_deductions = penalty + late_penalty
+    total_all_bonus += day_bonus
+    total_all_penalty += penalty
+    total_hours_worked += hours_worked
+    total_overtime_hours += overtime_hours
     
     info_label = status
     if status == "Present":
@@ -359,48 +383,47 @@ for idx, row in edited_df.iterrows():
         if late_min > 0: notes.append(f"Late {late_min}m")
         if break_overstay_minutes > 0: notes.append(f"Break Over {break_overstay_minutes}m")
         if notes:
-            info_label += f" ({', '.join(notes)}"
-            if late_status == "Justified": info_label += " - Justified)"
-            else: info_label += ")"
+            info_label += f" ({', '.join(notes)})"
 
     final_attendance_profile[day_num] = {
         "DateText": date_string,
         "ClockIn": c_in,
-        "BreakOut": b_out,
-        "BreakIn": b_in,
+        "LunchOut": l_out,
+        "LunchIn": l_in,
         "ClockOut": c_out,
-        "LateStatusText": info_label,
-        "Deductions": total_deductions,
-        "NetEarnings": day_earnings
+        "HoursWorked": f"{hours_worked:.1f}",
+        "Overtime": f"{overtime_hours:.1f}",
+        "Bonus": f"{day_bonus:.2f}",
+        "Penalty": f"{penalty:.2f}",
+        "StatusText": info_label,
+        "NetEarnings": f"{day_earnings:.2f}"
     }
     
     calculated_preview_rows.append({
         "Date": date_string,
-        "Status": status,
-        "Biometric Flow": raw_punch_str if status == "Present" else "--",
-        "Hours Worked": f"{hours_worked:.1f} hrs",
-        "Penalties Deducted": f"-{total_deductions:.2f} DA" if total_deductions > 0 else "0.00 DA",
-        "Net Earnings": f"{day_earnings:.2f} DA"
+        "In": c_in,
+        "Lunch Out": l_out,
+        "Lunch In": l_in,
+        "Out": c_out,
+        "Hours": f"{hours_worked:.1f} hrs",
+        "O.T.": f"{overtime_hours:.1f} hrs",
+        "Day Net Total": f"{day_earnings:.2f} DA"
     })
 
 df_financial_verification = pd.DataFrame(calculated_preview_rows)
-st.dataframe(df_financial_verification, use_container_width=True, height=400, hide_index=True)
+st.dataframe(df_financial_verification, use_container_width=True, height=380, hide_index=True)
 
-# Summary Panels
 net_salary = total_pay - advance_pay
 col_m1, col_m2, col_m3 = st.columns(3)
-with col_m1:
-    st.metric("Gross Parsed Earnings", f"{total_pay:.2f} DA")
-with col_m2:
-    st.metric("Salary Advances (Deductions)", f"-{advance_pay:.2f} DA")
-with col_m3:
-    st.metric("Final Employee Net Pay-Out", f"{net_salary:.2f} DA")
+with col_m1: st.metric("Gross Earnings (Inc. Bonuses)", f"{total_pay:.2f} DA")
+with col_m2: st.metric("Advances / Deductions", f"-{advance_pay:.2f} DA")
+with col_m3: st.metric("Net Salary Pay-Out", f"{net_salary:.2f} DA")
 
 # ----------------------------------------------------
-# REPORT COMPILER EXPORT
+# EXPORT EXECUTIVE LEDGER WITH PREMIUM STYLING
 # ----------------------------------------------------
 st.markdown("---")
-st.subheader("5. Export Final Report Documents")
+st.subheader("5. Export Final Corporate Ledger Document")
 
 if st.button("Compile & Print Final PDF Statement", type="primary"):
     pdf_rows = []
@@ -408,73 +431,155 @@ if st.button("Compile & Print Final PDF Statement", type="primary"):
         p = final_attendance_profile[d]
         pdf_rows.append([
             p["DateText"], 
-            p["ClockIn"], p["BreakOut"], p["BreakIn"], p["ClockOut"],
-            p["LateStatusText"], 
-            f"-{p['Deductions']:.2f} DA" if p['Deductions'] > 0 else "0.00 DA",
-            f"{p['NetEarnings']:.2f} DA"
+            p["ClockIn"], 
+            p["LunchOut"],
+            p["LunchIn"],
+            p["ClockOut"],
+            p["HoursWorked"], 
+            p["Overtime"], 
+            p["Bonus"], 
+            p["Penalty"], 
+            p["NetEarnings"]
         ])
         
-    filename = f"Payroll_Report_{selected_employee_key.replace(' ', '_')}_{target_period.replace('/', '_')}.pdf"
-    doc = SimpleDocTemplate(filename, pagesize=letter, rightMargin=20, leftMargin=20, topMargin=30, bottomMargin=30)
+    filename = f"Corporate_Payroll_{selected_employee_key.replace(' ', '_')}_{target_period.replace('/', '_')}.pdf"
+    
+    doc = SimpleDocTemplate(filename, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
     story = []
     
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle('DocTitle', parent=styles['Heading1'], fontSize=18, textColor=colors.HexColor("#1A365D"), spaceAfter=10)
+    title_style = ParagraphStyle('DocTitle', parent=styles['Heading1'], fontSize=18, textColor=colors.HexColor("#1A365D"), spaceAfter=5)
+    section_style = ParagraphStyle('SectionTitle', parent=styles['Heading2'], fontSize=13, textColor=colors.HexColor("#1A365D"), spaceBefore=20, spaceAfter=12)
     normal_style = styles['Normal']
-    bold_style = ParagraphStyle('BoldText', parent=normal_style, fontName='Helvetica-Bold')
-
-    header_data = []
-    if logo_path and os.path.exists(logo_path):
-        img = Image(logo_path, width=50, height=50)
-        header_data = [[img, Paragraph(f"<b>{company_name}</b><br/>Payroll Statement - {target_period}", title_style)]]
-    else:
-        header_data = [[Paragraph(f"<b>{company_name}</b><br/>Payroll Statement - {target_period}", title_style)]]
-        
-    header_table = Table(header_data, colWidths=[100, 470] if logo_path else [570])
-    header_table.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE')]))
-    story.append(header_table)
-    story.append(Spacer(1, 15))
     
-    emp_info = [
-        [Paragraph("<b>Employee Name:</b>", normal_style), Paragraph(selected_employee_key, normal_style), Paragraph("<b>Base Monthly Salary:</b>", normal_style), Paragraph(f"{base_salary:.2f} DA", normal_style)],
-        [Paragraph("<b>Pay Period:</b>", normal_style), Paragraph(target_period, normal_style), Paragraph("<b>Advance Reductions:</b>", normal_style), Paragraph(f"{advance_pay:.2f} DA", normal_style)],
-        ["", "", Paragraph("<b>Net Pay Out:</b>", bold_style), Paragraph(f"<b>{net_salary:.2f} DA</b>", bold_style)]
+    # Premium Layout Styles
+    label_style = ParagraphStyle('ProfileLabel', fontName='Helvetica-Bold', fontSize=10, textColor=colors.HexColor("#4A5568"))
+    val_style = ParagraphStyle('ProfileVal', fontName='Helvetica', fontSize=10, textColor=colors.black)
+    
+    matrix_header_style = ParagraphStyle('MatrixHeader', fontName='Helvetica-Bold', fontSize=11, textColor=colors.HexColor("#1A365D"))
+    matrix_label_style = ParagraphStyle('MatrixLabel', fontName='Helvetica', fontSize=10.5, textColor=colors.black)
+    matrix_bold_style = ParagraphStyle('MatrixBold', fontName='Helvetica-Bold', fontSize=12, textColor=colors.HexColor("#16A34A"))
+
+    # Header Builder
+    def build_header_block():
+        if logo_path and os.path.exists(logo_path):
+            img = Image(logo_path, width=50, height=50)
+            h_table = Table([[img, Paragraph(f"<b>{company_name}</b><br/>Official Salary & Attendance Ledger", title_style)]], colWidths=[65, 485])
+        else:
+            h_table = Table([[Paragraph(f"<b>{company_name}</b><br/>Official Salary & Attendance Ledger", title_style)]], colWidths=[550])
+        h_table.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE')]))
+        return h_table
+
+    # ====================================================
+    # PAGE 1: EXECUTIVELY STYLED SUMMARY & SIGNATURES
+    # ====================================================
+    story.append(build_header_block())
+    story.append(Spacer(1, 15))
+    story.append(Paragraph("<b>Employee Profile Details</b>", section_style))
+    
+    # UPDATED: Clean Line-by-Line Stacked Layout
+    emp_info_data = [
+        [Paragraph("Employee Target Identity:", label_style), Paragraph(selected_employee_key, val_style)],
+        [Paragraph("Statement Accounting Period:", label_style), Paragraph(f"{selected_month_name} {selected_year} ({target_period})", val_style)],
+        [Paragraph("Contractual Base Salary Standard:", label_style), Paragraph(f"{base_salary:.2f} DA", val_style)],
+        [Paragraph("Metrics Profile Standard:", label_style), Paragraph(f"{shift_hours} Hours Per Shift / 9:00 AM Entry", val_style)]
     ]
-    info_table = Table(emp_info, colWidths=[130, 150, 150, 140])
+    info_table = Table(emp_info_data, colWidths=[180, 370])
     info_table.setStyle(TableStyle([
-        ('BACKGROUND', (2,2), (3,2), colors.HexColor("#E2E8F0")),
-        ('PADDING', (0,0), (-1,-1), 5),
-        ('LINEBELOW', (0,0), (-1,-1), 0.5, colors.lightgrey)
+        ('PADDING', (0,0), (-1,-1), 6),
+        ('LINEBELOW', (0,0), (-1,-1), 0.5, colors.HexColor("#E2E8F0")),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE')
     ]))
     story.append(info_table)
-    story.append(Spacer(1, 15))
+    story.append(Spacer(1, 20))
     
-    # Clean, detailed header with columns for every shift state
-    table_header = ["Date", "In", "Break Out", "Break In", "Out", "Status / Info", "Penalties", "Net Earnings"]
+    # UPDATED: Massive, dominant matrix table filling out the page layout
+    story.append(Paragraph("<b>Financial Accounting Summary Matrix</b>", section_style))
+    summary_data = [
+        [Paragraph("Payroll Component Matrix", matrix_header_style), Paragraph("Statement Metric Value", matrix_header_style), Paragraph("Payroll Component Matrix", matrix_header_style), Paragraph("Statement Metric Value", matrix_header_style)],
+        [Paragraph("Calculated Hourly Rate", matrix_label_style), Paragraph(f"{hourly_rate:.2f} DA", matrix_label_style), Paragraph("Total Attendance Penalty", matrix_label_style), Paragraph(f"{total_all_penalty:.2f} DA", matrix_label_style)],
+        [Paragraph("Total Work Hours Logged", matrix_label_style), Paragraph(f"{total_hours_worked:.1f} Hrs", matrix_label_style), Paragraph("Base Advance Reductions", matrix_label_style), Paragraph(f"{advance_pay:.2f} DA", matrix_label_style)],
+        [Paragraph("Total Overtime Logged", matrix_label_style), Paragraph(f"{total_overtime_hours:.1f} Hrs", matrix_label_style), Paragraph("Total Statement Deductions", matrix_label_style), Paragraph(f"{(total_all_penalty+advance_pay):.2f} DA", matrix_label_style)],
+        [Paragraph("Accumulated Monthly Bonus", matrix_label_style), Paragraph(f"{total_all_bonus:.2f} DA", matrix_label_style), Paragraph("Final Net Payout (DZD)", matrix_header_style), Paragraph(f"{net_salary:.2f} DA", matrix_bold_style)]
+    ]
+    
+    summary_table = Table(summary_data, colWidths=[165, 110, 165, 110])
+    summary_table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#EDF2F7")),
+        ('GRID', (0,0), (-1,-1), 1, colors.HexColor("#CBD5E0")),
+        ('PADDING', (0,0), (-1,-1), 16),  # Maximized internal spacing to fill the visual frame
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('BACKGROUND', (2,4), (3,4), colors.HexColor("#F0FDF4")), 
+        ('BOX', (2,4), (3,4), 2, colors.HexColor("#16A34A"))
+    ]))
+    story.append(summary_table)
+    
+    # Dynamic spacer to drop validation block down nicely
+    story.append(Spacer(1, 120))
+    
+    # UPDATED: Premium Signature Framework
+    sig_label_style = ParagraphStyle('SigLabel', fontName='Helvetica-Bold', fontSize=10, textColor=colors.HexColor("#2D3748"))
+    sub_text_style = ParagraphStyle('SubText', fontName='Helvetica', fontSize=8, textColor=colors.HexColor("#718096"))
+    
+    sig_data = [
+        [Paragraph("Prepared By:", sig_label_style), Paragraph("Verified & Approved By:", sig_label_style)],
+        [Spacer(1, 50), Spacer(1, 50)], # space for physical signature or stamp
+        [Paragraph("....................................................<br/>HR Operations Representative", sub_text_style), 
+         Paragraph("....................................................<br/>Responsible Director Signature", sub_text_style)]
+    ]
+    sig_table = Table(sig_data, colWidths=[275, 275])
+    sig_table.setStyle(TableStyle([
+        ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+        ('VALIGN', (0,0), (-1,-1), 'BOTTOM'),
+        ('PADDING', (0,0), (-1,-1), 4)
+    ]))
+    story.append(sig_table)
+    
+    story.append(PageBreak())
+    
+    # ====================================================
+    # PAGE 2: ITEMIZED DAILY LOG (STAYS CLEAN & COMPACT)
+    # ====================================================
+    story.append(Paragraph(f"<b>Itemized Daily Biometric Log — Staff: {selected_employee_key}</b>", section_style))
+    story.append(Spacer(1, 4))
+    
+    table_header = ["Date", "In", "Lunch Out", "Lunch In", "Out", "Hrs Worked", "O.T.", "Bonus", "Penalty", "Net Total"]
     table_data = [table_header] + pdf_rows
     
-    # Document dimensions adjusted beautifully to fit perfectly onto standard print layouts
-    report_table = Table(table_data, colWidths=[105, 40, 55, 50, 40, 120, 75, 85])
+    report_table = Table(table_data, colWidths=[72, 40, 48, 48, 40, 55, 40, 50, 52, 105])
     report_table.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#1A365D")),
         ('TEXTCOLOR', (0,0), (-1,0), colors.white),
         ('ALIGN', (0,0), (-1,-1), 'CENTER'),
         ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0,0), (-1,0), 9),
+        ('FONTSIZE', (0,0), (-1,0), 8.5),
         ('FONTSIZE', (0,1), (-1,-1), 8),
-        ('BOTTOMPADDING', (0,0), (-1,0), 4),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#CBD5E0")),
-        ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor("#F7FAFC")])
+        ('TOPPADDING', (0,0), (-1,-1), 3.5),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 3.5),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor("#E2E8F0")),
+        ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor("#F7FAFC")]),
     ]))
-    
     story.append(report_table)
+    story.append(Spacer(1, 12))
+    
+    bottom_summary_data = [
+        [Paragraph("<b>Calculated Hourly Salary:</b>", normal_style), Paragraph(f"{hourly_rate:.2f} DA / Hr", normal_style), Paragraph("<b>Final Net Salary Payout:</b>", ParagraphStyle('B', fontName='Helvetica-Bold', fontSize=9.5)), Paragraph(f"<b>{net_salary:.2f} DA</b>", ParagraphStyle('G', fontName='Helvetica-Bold', fontSize=9.5, textColor=colors.HexColor("#16A34A")))]
+    ]
+    bottom_table = Table(bottom_summary_data, colWidths=[150, 120, 140, 140])
+    bottom_table.setStyle(TableStyle([
+        ('BACKGROUND', (2,0), (3,0), colors.HexColor("#F0FDF4")), 
+        ('PADDING', (0,0), (-1,-1), 8),
+        ('BOX', (2,0), (3,0), 1.2, colors.HexColor("#16A34A")) 
+    ]))
+    story.append(bottom_table)
+    
     doc.build(story)
     
-    st.success(f"✅ Calculation successfully processed! Report compiled as: '{filename}'")
+    st.success(f"✅ Premium 2-Page Ledger Compiled Successfully: '{filename}'")
     
     with open(filename, "rb") as pdf_file:
         st.download_button(
-            label="📥 Download Detailed PDF Payroll Report",
+            label="📥 Download Upgraded Executive PDF Statement",
             data=pdf_file,
             file_name=filename,
             mime="application/pdf"
