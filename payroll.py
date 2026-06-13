@@ -39,14 +39,14 @@ selected_month_name, selected_month_code = st.sidebar.selectbox(
     "Select Month", months_list, index=10, format_func=lambda x: x[0]
 )
 
-# Year options dropdown selection list spanning 2020 to 2040
-year_options = [str(y) for y in range(2020, 2041)]
-current_year_str = "2025"  # Matches your script's base baseline index choice perfectly
+# FEATURE 1: Dynamic Year Selector (No manual typing, scrollable dropdown from 2020 to 2045)
+year_options = [str(y) for y in range(2020, 2046)]
+default_year_str = "2025"
 
 selected_year = st.sidebar.selectbox(
     "Select Year", 
     options=year_options, 
-    index=year_options.index(current_year_str) if current_year_str in year_options else 5
+    index=year_options.index(default_year_str) if default_year_str in year_options else 5
 )
 target_period = f"{selected_month_code}/{selected_year}"
 
@@ -62,7 +62,13 @@ shift_start_time = st.sidebar.time_input(
     value=datetime.strptime("09:00", "%H:%M").time()
 )
 shift_hours = st.sidebar.radio("Paid Shift Length (Including 1H Paid Break)", [8, 9], index=0)
-bonus_rule = st.sidebar.radio("7-Day Streak Bonus", [1.0, 0.5], format_func=lambda x: f"+{x} Day Pay")
+
+# FEATURE 2: Added "0.0 (Cancel / Disable Bonus)" to the bonus rules selection matrix
+bonus_rule = st.sidebar.radio(
+    "7-Day Streak Bonus", 
+    [1.0, 0.5, 0.0], 
+    format_func=lambda x: f"+{x} Day Pay" if x > 0.0 else "❌ Cancel / Disable Bonus Rule"
+)
 
 shift_start_str = shift_start_time.strftime("%H:%M")
 
@@ -93,7 +99,7 @@ def analyze_master_biometric_log(uploaded_file, target_month_str):
     else:
         target_m, target_y = "11", "2025"
 
-    # --- METHOD A: EXCEL PARSING CORE (.XLSX / .XLS) ---
+    # --- METHOD A: EXCEL PARSING CORE ---
     if filename.endswith(('.xlsx', '.xls')):
         try:
             if filename.endswith('.xlsx'):
@@ -156,7 +162,7 @@ def analyze_master_biometric_log(uploaded_file, target_month_str):
             st.error(f"Excel Sheet Parsing Alert: {e}")
             return master_database
 
-    # --- METHOD B: PLAIN TEXT LOG PARSING CORE (.TXT) ---
+    # --- METHOD B: PLAIN TEXT LOG PARSING CORE ---
     elif filename.endswith('.txt'):
         try:
             raw_data = uploaded_file.read()
@@ -213,7 +219,7 @@ def analyze_master_biometric_log(uploaded_file, target_month_str):
             st.error(f"Text File Parsing Alert: {e}")
             return master_database
 
-    # --- METHOD C: ROBUST COMPILER PDF PARSING CORE (.PDF) ---
+    # --- METHOD C: PDF PARSING CORE ---
     else:
         try:
             reader = PdfReader(uploaded_file)
@@ -471,9 +477,11 @@ for idx, row in edited_df.iterrows():
             penalty = daily_rate * 0.5
             day_earnings = -penalty
 
+    # Calculation logic updates cleanly with bonus rule selection metrics switches
     if consecutive_work_days == 7:
-        day_bonus = (daily_rate * bonus_rule)
-        day_earnings += day_bonus
+        if bonus_rule > 0.0:
+            day_bonus = (daily_rate * bonus_rule)
+            day_earnings += day_bonus
         consecutive_work_days = 0
 
     total_pay += day_earnings
