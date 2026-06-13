@@ -16,18 +16,18 @@ from pypdf import PdfReader
 # Set up browser layout frame config
 st.set_page_config(page_title="Advanced Payroll Matrix", layout="wide")
 
-st.title("?? Universal Attendance Parsing & Payroll Engine")
+st.title("⚙️ Universal Attendance Parsing & Payroll Engine")
 st.markdown("---")
 
 # ----------------------------------------------------
 # SIDEBAR CONFIGURATIONS (Global System Standards)
 # ----------------------------------------------------
-st.sidebar.header("?? Company Settings")
+st.sidebar.header("🏢 Company Settings")
 company_name = st.sidebar.text_input("Company Name", "Tech Den & DJ Freeshop")
 uploaded_logo = st.sidebar.file_uploader("Upload Company Logo", type=["png", "jpg", "jpeg"])
 
 st.sidebar.markdown("---")
-st.sidebar.header("?? Pay Period Selection")
+st.sidebar.header("📅 Pay Period Selection")
 
 months_list = [
     ("January", "01"), ("February", "02"), ("March", "03"), ("April", "04"),
@@ -38,7 +38,13 @@ months_list = [
 selected_month_name, selected_month_code = st.sidebar.selectbox(
     "Select Month", months_list, index=10, format_func=lambda x: x[0]
 )
-selected_year = st.sidebar.selectbox("Select Year", ["2025", "2026", "2027"], index=0)
+
+# UPDATED: Extended range to accommodate archive history and future tracking configurations
+selected_year = st.sidebar.selectbox(
+    "Select Year", 
+    ["2024", "2025", "2026", "2027", "2028", "2029", "2030"], 
+    index=2  # Defaults to 2026
+)
 target_period = f"{selected_month_code}/{selected_year}"
 
 # Dynamic Days in Month tracking variables
@@ -47,7 +53,7 @@ month_int = int(selected_month_code)
 num_days_in_month = calendar.monthrange(year_int, month_int)[1]
 
 st.sidebar.markdown("---")
-st.sidebar.header("?? Shift & Rules Matrix")
+st.sidebar.header("🛠️ Shift & Rules Matrix")
 shift_start_time = st.sidebar.time_input(
     "Shift Start Time", 
     value=datetime.strptime("09:00", "%H:%M").time()
@@ -294,7 +300,7 @@ default_name_value = ""
 if parsed_master_db:
     default_name_value = sorted(list(parsed_master_db.keys()))[0]
 
-selected_employee_key = st.text_input("?? Employee Name:", value=default_name_value)
+selected_employee_key = st.text_input("👤 Employee Name:", value=default_name_value)
 
 # Profile configurations
 col_e1, col_e2 = st.columns(2)
@@ -336,7 +342,7 @@ for d in range(1, num_days_in_month + 1):
 # INTERACTIVE DATA MATRIX
 # ----------------------------------------------------
 st.markdown("---")
-st.subheader("3. ?? Review Logs & Modify Row Profiles")
+st.subheader("3. 📊 Review Logs & Modify Row Profiles")
 
 initial_rows = []
 for d in range(1, num_days_in_month + 1):
@@ -377,7 +383,7 @@ edited_df = st.data_editor(
 # LIVE FINANCIAL CALCULATION PREVIEW ENGINE
 # ----------------------------------------------------
 st.markdown("---")
-st.subheader("4. ?? Live Calculation Summary Table")
+st.subheader("4. 💵 Live Calculation Summary Table")
 
 daily_rate = base_salary / float(num_days_in_month)
 hourly_rate = daily_rate / shift_hours
@@ -636,11 +642,11 @@ if st.button("Compile & Print Final PDF Statement", type="primary"):
     
     doc.build(story)
     
-    st.success(f"? Premium 2-Page Ledger Compiled Successfully: '{filename}'")
+    st.success(f"📌 Premium 2-Page Ledger Compiled Successfully: '{filename}'")
     
     with open(filename, "rb") as pdf_file:
         st.download_button(
-            label="?? Download Upgraded Executive PDF Statement",
+            label="📥 Download Upgraded Executive PDF Statement",
             data=pdf_file,
             file_name=filename,
             mime="application/pdf"
