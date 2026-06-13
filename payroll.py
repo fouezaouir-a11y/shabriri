@@ -16,36 +16,29 @@ from pypdf import PdfReader
 # Set up browser layout frame config
 st.set_page_config(page_title="Advanced Payroll Matrix", layout="wide")
 
-st.title("📊 Universal Attendance Parsing & Payroll Engine")
+st.title("?? Universal Attendance Parsing & Payroll Engine")
 st.markdown("---")
 
 # ----------------------------------------------------
 # SIDEBAR CONFIGURATIONS (Global System Standards)
 # ----------------------------------------------------
-st.sidebar.header("🏢 Company Settings")
+st.sidebar.header("?? Company Settings")
 company_name = st.sidebar.text_input("Company Name", "Tech Den & DJ Freeshop")
 uploaded_logo = st.sidebar.file_uploader("Upload Company Logo", type=["png", "jpg", "jpeg"])
 
 st.sidebar.markdown("---")
-st.sidebar.header("📅 Pay Period Selection")
+st.sidebar.header("?? Pay Period Selection")
 
 months_list = [
     ("January", "01"), ("February", "02"), ("March", "03"), ("April", "04"),
     ("May", "05"), ("June", "06"), ("July", "07"), ("August", "08"),
     ("September", "09"), ("October", "10"), ("November", "11"), ("December", "12")
 ]
+# Defaults to November to align smoothly with your real data period logs
 selected_month_name, selected_month_code = st.sidebar.selectbox(
-    "Select Month", months_list, index=datetime.now().month - 1, format_func=lambda x: x[0]
+    "Select Month", months_list, index=10, format_func=lambda x: x[0]
 )
-
-# DYNAMIC YEAR SYSTEM: Computes a rolling timeline window relative to the current calendar year
-current_year = datetime.now().year
-dynamic_years_range = [str(y) for y in range(current_year - 5, current_year + 6)]
-selected_year = st.sidebar.selectbox(
-    "Select Year", 
-    dynamic_years_range, 
-    index=dynamic_years_range.index(str(current_year))
-)
+selected_year = st.sidebar.selectbox("Select Year", ["2025", "2026", "2027"], index=0)
 target_period = f"{selected_month_code}/{selected_year}"
 
 # Dynamic Days in Month tracking variables
@@ -54,7 +47,7 @@ month_int = int(selected_month_code)
 num_days_in_month = calendar.monthrange(year_int, month_int)[1]
 
 st.sidebar.markdown("---")
-st.sidebar.header("⏱️ Shift & Rules Matrix")
+st.sidebar.header("?? Shift & Rules Matrix")
 shift_start_time = st.sidebar.time_input(
     "Shift Start Time", 
     value=datetime.strptime("09:00", "%H:%M").time()
@@ -77,7 +70,7 @@ def get_calendar_label(day_num, month_num, year_num):
     return f"{day_num:02d}/{month_num:02d} ({day_name})"
 
 # ----------------------------------------------------
-# UNIVERSAL PARSING ENGINE (STREAM-BASED DYNAMIC MULTI-MATCHING)
+# UNIVERSAL PARSING ENGINE (PDF, EXCEL, & PLAIN TEXT)
 # ----------------------------------------------------
 def analyze_master_biometric_log(uploaded_file, target_month_str):
     master_database = {}
@@ -85,7 +78,12 @@ def analyze_master_biometric_log(uploaded_file, target_month_str):
         return master_database
 
     filename = uploaded_file.name.lower()
-    target_m, target_y = target_month_str.split('/')
+    
+    parts = target_month_str.split('/')
+    if len(parts) == 2:
+        target_m, target_y = parts[0], parts[1]
+    else:
+        target_m, target_y = "11", "2025"
 
     # --- METHOD A: EXCEL PARSING CORE (.XLSX / .XLS) ---
     if filename.endswith(('.xlsx', '.xls')):
@@ -97,12 +95,12 @@ def analyze_master_biometric_log(uploaded_file, target_month_str):
                 
             df.columns = [str(c).strip().lower() for c in df.columns]
             
-            name_col = next((c for c in df.columns if any(k in c for k in ['name', 'employee', 'nom', 'user', 'id', 'person', 'employe', 'staff'])), None)
-            date_col = next((c for c in df.columns if any(k in c for k in ['date', 'time', 'punch', 'horaire', 'check', 'mouvement', 'temps'])), None)
+            name_col = next((c for c in df.columns if any(k in c for k in ['name', 'employee', 'nom', 'user', 'id', 'person'])), None)
+            date_col = next((c for c in df.columns if any(k in c for k in ['date', 'time', 'punch', 'horaire', 'check', 'mouvement'])), None)
             
             if not name_col or not date_col:
-                name_col = df.columns[0] if len(df.columns) > 0 else None
-                date_col = df.columns[1] if len(df.columns) > 1 else None
+                name_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
+                date_col = df.columns[3] if len(df.columns) > 3 else df.columns[1]
 
             if name_col and date_col:
                 for _, row in df.iterrows():
@@ -112,26 +110,41 @@ def analyze_master_biometric_log(uploaded_file, target_month_str):
                     if emp_raw.lower() in ['nan', 'null', '', 'none'] or date_raw.lower() in ['nan', 'null', '', 'none']:
                         continue
                     
-                    # Stream parsing patterns to isolate timestamps alongside target month days
-                    dates_found = re.findall(r"(\d{1,2})/(\d{1,2})(?:/\d{2,4})?", date_raw)
-                    times_found = re.findall(r"(\d{1,2}):(\d{2})", date_raw)
-                    
-                    if dates_found and times_found:
-                        for d_parts in dates_found:
-                            day = int(d_parts[0])
-                            m_str = f"{int(d_parts[1]):02d}"
-                            
-                            if m_str == target_m:
-                                emp_name_found = re.sub(r'[\"\',]', '', emp_raw).strip()
-                                if emp_name_found not in master_database:
-                                    master_database[emp_name_found] = {}
-                                if day not in master_database[emp_name_found]:
-                                    master_database[emp_name_found][day] = []
-                                
-                                for t in times_found:
-                                    t_str = f"{int(t[0]):02d}:{t[1]}"
-                                    if t_str not in master_database[emp_name_found][day]:
-                                        master_database[emp_name_found][day].append(t_str)
+                    day, m_str, y_str, time_str = None, None, None, None
+
+                    # Pattern 1: Machine Standard (YYYY/MM/DD HH:MM:SS AM/PM)
+                    machine_match = re.search(r"(\d{4})/(\d{1,2})/(\d{1,2})\s+(\d{1,2}):(\d{2}):?(\d{2})?\s*(AM|PM)?", date_raw, re.IGNORECASE)
+                    # Pattern 2: Manual Test Standard (DD/MM/YYYY HH:MM)
+                    test_match = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})\s+(\d{1,2}):(\d{2})", date_raw)
+
+                    if machine_match:
+                        y_str = machine_match.group(1)
+                        m_str = f"{int(machine_match.group(2)):02d}"
+                        day = int(machine_match.group(3))
+                        hr = int(machine_match.group(4))
+                        minute = machine_match.group(5)
+                        ampm = machine_match.group(7)
+                        
+                        if ampm:
+                            ampm = ampm.upper()
+                            if ampm == "PM" and hr < 12: hr += 12
+                            elif ampm == "AM" and hr == 12: hr = 0
+                        time_str = f"{hr:02d}:{minute}"
+
+                    elif test_match:
+                        day = int(test_match.group(1))
+                        m_str = f"{int(test_match.group(2)):02d}"
+                        y_str = test_match.group(3)
+                        time_str = f"{int(test_match.group(4)):02d}:{test_match.group(5)}"
+
+                    if day and m_str == target_m and y_str == target_y:
+                        emp_name_found = re.sub(r'[\"\',]', '', emp_raw).strip()
+                        if emp_name_found not in master_database:
+                            master_database[emp_name_found] = {}
+                        if day not in master_database[emp_name_found]:
+                            master_database[emp_name_found][day] = []
+                        if time_str not in master_database[emp_name_found][day]:
+                            master_database[emp_name_found][day].append(time_str)
             return master_database
         except Exception as e:
             st.error(f"Excel Sheet Parsing Alert: {e}")
@@ -148,33 +161,47 @@ def analyze_master_biometric_log(uploaded_file, target_month_str):
                 if not line.strip():
                     continue
                 
-                dates_found = re.findall(r"(\d{1,2})/(\d{1,2})(?:/\d{2,4})?", line)
-                times_found = re.findall(r"(\d{1,2}):(\d{2})", line)
+                day, m_str, y_str, time_str = None, None, None, None
                 
-                if dates_found and times_found:
-                    for d_parts in dates_found:
-                        day = int(d_parts[0])
-                        m_str = f"{int(d_parts[1]):02d}"
-                        
-                        if m_str == target_m:
-                            clean_line = re.sub(r'\d{1,2}/\d{1,2}(?:/\d{2,4})?', '', line)
-                            clean_line = re.sub(r'\d{1,2}:\d{2}', '', clean_line)
-                            clean_line = re.sub(r'[\"\',\t\s\:]+', ' ', clean_line).strip()
-                            emp_name_found = re.sub(r'\b\d\b', '', clean_line).strip()
-                            
-                            if not emp_name_found or len(emp_name_found) < 2:
-                                backup_digits = re.findall(r'\b\d+\b', clean_line)
-                                emp_name_found = f"{backup_digits[0]}" if backup_digits else "Unknown Log Identity"
-                            
-                            if emp_name_found not in master_database:
-                                master_database[emp_name_found] = {}
-                            if day not in master_database[emp_name_found]:
-                                master_database[emp_name_found][day] = []
-                            
-                            for t in times_found:
-                                t_str = f"{int(t[0]):02d}:{t[1]}"
-                                if t_str not in master_database[emp_name_found][day]:
-                                    master_database[emp_name_found][day].append(t_str)
+                machine_match = re.search(r"(\d{4})/(\d{1,2})/(\d{1,2})\s+(\d{1,2}):(\d{2}):?(\d{2})?\s*(AM|PM)?", line, re.IGNORECASE)
+                test_match = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})\s+(\d{1,2}):(\d{2})", line)
+
+                if machine_match:
+                    y_str = machine_match.group(1)
+                    m_str = f"{int(machine_match.group(2)):02d}"
+                    day = int(machine_match.group(3))
+                    hr = int(machine_match.group(4))
+                    minute = machine_match.group(5)
+                    ampm = machine_match.group(7)
+                    
+                    if ampm:
+                        ampm = ampm.upper()
+                        if ampm == "PM" and hr < 12: hr += 12
+                        elif ampm == "AM" and hr == 12: hr = 0
+                    time_str = f"{hr:02d}:{minute}"
+                    matched_str = machine_match.group(0)
+                elif test_match:
+                    day = int(test_match.group(1))
+                    m_str = f"{int(test_match.group(2)):02d}"
+                    y_str = test_match.group(3)
+                    time_str = f"{int(test_match.group(4)):02d}:{test_match.group(5)}"
+                    matched_str = test_match.group(0)
+
+                if day and m_str == target_m and y_str == target_y:
+                    clean_line = line.replace(matched_str, "")
+                    clean_line = re.sub(r'[\"\',\t\s\:]+', ' ', clean_line).strip()
+                    emp_name_found = re.sub(r'\b\d\b', '', clean_line).strip()
+                    
+                    if not emp_name_found or len(emp_name_found) < 2:
+                        backup_digits = re.findall(r'\b\d+\b', clean_line)
+                        emp_name_found = f"Staff ID: {backup_digits[0]}" if backup_digits else "Unknown Identity"
+                    
+                    if emp_name_found not in master_database:
+                        master_database[emp_name_found] = {}
+                    if day not in master_database[emp_name_found]:
+                        master_database[emp_name_found][day] = []
+                    if time_str not in master_database[emp_name_found][day]:
+                        master_database[emp_name_found][day].append(time_str)
             return master_database
         except Exception as e:
             st.error(f"Text File Parsing Alert: {e}")
@@ -184,44 +211,64 @@ def analyze_master_biometric_log(uploaded_file, target_month_str):
     else:
         try:
             reader = PdfReader(uploaded_file)
-            current_staff = ""
-            
+            full_text = ""
             for page in reader.pages:
                 page_text = page.extract_text() or ""
+                if page_text and "\n" not in page_text:
+                    page_text = re.sub(r'(\d{4}/\d{1,2}/\d{1,2})', r'\n\1', page_text)
+                    page_text = re.sub(r'(\d{1,2}/\d{1,2}/\d{4})', r'\n\1', page_text)
+                full_text += page_text + "\n"
                 
-                # Check structural labels for identity headers
-                staff_ids = re.findall(r"(?:Staff|Employee Name|Identity|Staff:)\s*([A-Za-z0-9_\s\-]+)", page_text, re.IGNORECASE)
-                if staff_ids:
-                    current_staff = staff_ids[0].strip()
+            full_text = full_text.encode('utf-8', errors='ignore').decode('utf-8')
+            lines = full_text.split("\n")
+            
+            for line in lines:
+                day, m_str, y_str, time_str = None, None, None, None
                 
-                if not current_staff or current_staff.lower() in ["name", "employee"]:
-                    name_block = re.search(r"(?:Employee Name:)\s*\n*\s*\"*([A-Za-z0-9]+)", page_text, re.IGNORECASE)
-                    if name_block:
-                        current_staff = name_block.group(1).strip()
-                
-                if not current_staff:
-                    current_staff = "6" # Universal structural backup anchor
+                machine_match = re.search(r"(\d{4})/(\d{1,2})/(\d{1,2})\s*(\d{1,2}):(\d{2}):?(\d{2})?\s*(AM|PM)?", line, re.IGNORECASE)
+                test_match = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})\s*(\d{1,2}):(\d{2})", line)
 
-                lines = page_text.split("\n")
-                for line in lines:
-                    dates_found = re.findall(r"(\d{1,2})/(\d{1,2})(?:/\d{2,4})?", line)
-                    times_found = re.findall(r"(\d{1,2}):(\d{2})", line)
+                if machine_match:
+                    y_str = machine_match.group(1)
+                    m_str = f"{int(machine_match.group(2)):02d}"
+                    day = int(machine_match.group(3))
+                    hr = int(machine_match.group(4))
+                    minute = machine_match.group(5)
+                    ampm = machine_match.group(7)
                     
-                    if dates_found and times_found:
-                        for d_parts in dates_found:
-                            day = int(d_parts[0])
-                            m_str = f"{int(d_parts[1]):02d}"
+                    if ampm:
+                        ampm = ampm.upper()
+                        if ampm == "PM" and hr < 12: hr += 12
+                        elif ampm == "AM" and hr == 12: hr = 0
+                    time_str = f"{hr:02d}:{minute}"
+                    matched_str = machine_match.group(0)
+                elif test_match:
+                    day = int(test_match.group(1))
+                    m_str = f"{int(test_match.group(2)):02d}"
+                    y_str = test_match.group(3)
+                    time_str = f"{int(test_match.group(4)):02d}:{test_match.group(5)}"
+                    matched_str = test_match.group(0)
+
+                if day and m_str == target_m and y_str == target_y:
+                    clean_line = line.replace("OUR COMPANY", "").replace("COMPANY", "").replace(matched_str, "")
+                    clean_line = re.sub(r'[\"\',]', '', clean_line).strip()
+                    emp_name_found = re.sub(r'\b\d\b', '', clean_line).strip() 
+                    
+                    # Target layout fix for specific clipped PDF formats
+                    if ":" in emp_name_found:
+                        emp_name_found = emp_name_found.split(":")[0].strip()
+                    
+                    if not emp_name_found or len(emp_name_found) < 2:
+                        backup_digits = re.findall(r'\b\d+\b', clean_line)
+                        emp_name_found = backup_digits[0] if backup_digits else "Unknown Staff"
+                    
+                    if emp_name_found not in master_database:
+                        master_database[emp_name_found] = {}
+                    if day not in master_database[emp_name_found]:
+                        master_database[emp_name_found][day] = []
+                    if time_str not in master_database[emp_name_found][day]:
+                        master_database[emp_name_found][day].append(time_str)
                             
-                            if m_str == target_m:
-                                if current_staff not in master_database:
-                                    master_database[current_staff] = {}
-                                if day not in master_database[current_staff]:
-                                    master_database[current_staff][day] = []
-                                
-                                for t in times_found:
-                                    t_str = f"{int(t[0]):02d}:{t[1]}"
-                                    if t_str not in master_database[current_staff][day]:
-                                        master_database[current_staff][day].append(t_str)
         except Exception as e:
             st.error(f"PDF Engine parsing alert: {e}")
             
@@ -247,7 +294,7 @@ default_name_value = ""
 if parsed_master_db:
     default_name_value = sorted(list(parsed_master_db.keys()))[0]
 
-selected_employee_key = st.text_input("👤 Employee Name / ID Code:", value=default_name_value)
+selected_employee_key = st.text_input("?? Employee Name:", value=default_name_value)
 
 # Profile configurations
 col_e1, col_e2 = st.columns(2)
@@ -266,12 +313,9 @@ for d in range(1, num_days_in_month + 1):
     punches = sorted(selected_employee_logs.get(d, []))
     if punches:
         fmt = "%H:%M"
-        try:
-            act = datetime.strptime(punches[0], fmt)
-            exp = datetime.strptime(shift_start_str, fmt)
-            late_min = int((act - exp).total_seconds() / 60) if act > exp else 0
-        except:
-            late_min = 0
+        act = datetime.strptime(punches[0], fmt)
+        exp = datetime.strptime(shift_start_str, fmt)
+        late_min = int((act - exp).total_seconds() / 60) if act > exp else 0
         punch_display_text = " -> ".join(punches)
         
         structured_data[d] = {
@@ -292,12 +336,16 @@ for d in range(1, num_days_in_month + 1):
 # INTERACTIVE DATA MATRIX
 # ----------------------------------------------------
 st.markdown("---")
-st.subheader("3. 📋 Review Logs & Modify Row Profiles")
+st.subheader("3. ?? Review Logs & Modify Row Profiles")
 
 initial_rows = []
 for d in range(1, num_days_in_month + 1):
     day_profile = structured_data[d]
-    date_label = get_calendar_label(d, month_int, year_int)
+    try:
+        date_label = get_calendar_label(d, month_int, year_int)
+    except:
+        date_label = f"{d:02d}/{month_int:02d}"
+        
     initial_rows.append({
         "Date": date_label,
         "Attendance Status": day_profile["Status"],
@@ -329,7 +377,7 @@ edited_df = st.data_editor(
 # LIVE FINANCIAL CALCULATION PREVIEW ENGINE
 # ----------------------------------------------------
 st.markdown("---")
-st.subheader("4. 🧮 Live Calculation Summary Table")
+st.subheader("4. ?? Live Calculation Summary Table")
 
 daily_rate = base_salary / float(num_days_in_month)
 hourly_rate = daily_rate / shift_hours
@@ -353,7 +401,7 @@ for idx, row in edited_df.iterrows():
     if raw_punch_str in ["--", "None", "nan", ""]:
         punches = []
     else:
-        punches = sorted([p.strip() for p in raw_punch_str.split("->") if re.match(r"^\d{1,2}:\d{2}$", p.strip())])
+        punches = sorted([p.strip() for p in raw_punch_str.split("->") if re.match(r"^\d{2}:\d{2}$", p.strip())])
     
     c_in = punches[0] if len(punches) >= 1 else "--"
     l_out = punches[1] if len(punches) >= 3 else "--" 
@@ -532,8 +580,8 @@ if st.button("Compile & Print Final PDF Statement", type="primary"):
     ]))
     story.append(summary_table)
     
-    # Grid separation spacing for first overview sheet baseline alignment
-    story.append(Spacer(1, 140))
+    # Precise Spacer pushes the verification cards right onto the bottom baseline grid 
+    story.append(Spacer(1, 180))
     
     sig_label_style = ParagraphStyle('SigLabel', fontName='Helvetica-Bold', fontSize=10, textColor=colors.HexColor("#2D3748"))
     sub_text_style = ParagraphStyle('SubText', fontName='Helvetica', fontSize=8, textColor=colors.HexColor("#718096"))
@@ -588,11 +636,11 @@ if st.button("Compile & Print Final PDF Statement", type="primary"):
     
     doc.build(story)
     
-    st.success(f"✅ Premium 2-Page Ledger Compiled Successfully: '{filename}'")
+    st.success(f"? Premium 2-Page Ledger Compiled Successfully: '{filename}'")
     
     with open(filename, "rb") as pdf_file:
         st.download_button(
-            label="📥 Download Upgraded Executive PDF Statement",
+            label="?? Download Upgraded Executive PDF Statement",
             data=pdf_file,
             file_name=filename,
             mime="application/pdf"
