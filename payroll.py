@@ -14,9 +14,9 @@ from reportlab.lib import colors
 from pypdf import PdfReader
 
 # Set up browser layout frame config
-st.set_page_config(page_title="Advanced Payroll Matrix", layout="wide")
+st.set_page_config(page_title="Advanced Payroll Matrix", page_icon="📊", layout="wide")
 
-st.title("⚙️ Universal Attendance Parsing & Payroll Engine")
+st.title("📊 Universal Attendance Parsing & Payroll Engine")
 st.markdown("---")
 
 # ----------------------------------------------------
@@ -34,19 +34,24 @@ months_list = [
     ("May", "05"), ("June", "06"), ("July", "07"), ("August", "08"),
     ("September", "09"), ("October", "10"), ("November", "11"), ("December", "12")
 ]
+
 selected_month_name, selected_month_code = st.sidebar.selectbox(
-    "Select Month", months_list, index=datetime.now().month - 1, format_func=lambda x: x[0]
+    "Select Month", months_list, index=10, format_func=lambda x: x[0]
 )
 
-# FIXED: Allows typing or selecting absolutely ANY year you want now
-selected_year = st.sidebar.text_input("Select / Type Year", value=str(datetime.now().year))
+# Year options dropdown selection list spanning 2020 to 2040
+year_options = [str(y) for y in range(2020, 2041)]
+current_year_str = "2025"  # Matches your script's base baseline index choice perfectly
+
+selected_year = st.sidebar.selectbox(
+    "Select Year", 
+    options=year_options, 
+    index=year_options.index(current_year_str) if current_year_str in year_options else 5
+)
 target_period = f"{selected_month_code}/{selected_year}"
 
-# Dynamic Days in Month tracking variables safely parsed
-try:
-    year_int = int(selected_year)
-except ValueError:
-    year_int = datetime.now().year
+# Dynamic Days in Month tracking variables
+year_int = int(selected_year)
 month_int = int(selected_month_code)
 num_days_in_month = calendar.monthrange(year_int, month_int)[1]
 
@@ -57,7 +62,7 @@ shift_start_time = st.sidebar.time_input(
     value=datetime.strptime("09:00", "%H:%M").time()
 )
 shift_hours = st.sidebar.radio("Paid Shift Length (Including 1H Paid Break)", [8, 9], index=0)
-bonus_rule = st.sidebar.radio("7-Day Streak Bonus", [1.0, 0.5, 0.0], index=2, format_func=lambda x: f"+{x} Day Pay" if x > 0.0 else "No Bonus")
+bonus_rule = st.sidebar.radio("7-Day Streak Bonus", [1.0, 0.5], format_func=lambda x: f"+{x} Day Pay")
 
 shift_start_str = shift_start_time.strftime("%H:%M")
 
@@ -69,24 +74,24 @@ if uploaded_logo:
 
 # Calendar formatting helper
 def get_calendar_label(day_num, month_num, year_num):
-    try:
-        dt = datetime(year_num, month_num, day_num)
-        day_name = dt.strftime("%A") 
-        return f"{day_num:02d}/{month_num:02d} ({day_name})"
-    except:
-        return f"{day_num:02d}/{month_num:02d}"
+    dt = datetime(year_num, month_num, day_num)
+    day_name = dt.strftime("%A") 
+    return f"{day_num:02d}/{month_num:02d} ({day_name})"
 
 # ----------------------------------------------------
 # UNIVERSAL PARSING ENGINE (PDF, EXCEL, & PLAIN TEXT)
 # ----------------------------------------------------
-def analyze_master_biometric_log(uploaded_file, target_m, target_y):
+def analyze_master_biometric_log(uploaded_file, target_month_str):
     master_database = {}
     if uploaded_file is None:
         return master_database
 
     filename = uploaded_file.name.lower()
-    target_m_str = f"{int(target_m):02d}"
-    target_y_str = str(target_y).strip()
+    parts = target_month_str.split('/')
+    if len(parts) == 2:
+        target_m, target_y = parts[0], parts[1]
+    else:
+        target_m, target_y = "11", "2025"
 
     # --- METHOD A: EXCEL PARSING CORE (.XLSX / .XLS) ---
     if filename.endswith(('.xlsx', '.xls')):
@@ -96,103 +101,106 @@ def analyze_master_biometric_log(uploaded_file, target_m, target_y):
             else:
                 df = pd.read_excel(uploaded_file, engine='xlrd')
                 
-            # Keep original columns for data pulling but search lowercase strings
-            orig_cols = list(df.columns)
-            norm_cols = [str(c).strip().lower() for c in orig_cols]
+            df.columns = [str(c).strip().lower() for c in df.columns]
             
-            # FIXED: Extremely aggressive match criteria for biometric tables
-            name_col_idx = next((i for i, c in enumerate(norm_cols) if any(k in c for k in ['name', 'employee', 'nom', 'user', 'id', 'person', 'staff', 'uid', 'employé'])), None)
-            date_col_idx = next((i for i, c in enumerate(norm_cols) if any(k in c for k in ['date', 'time', 'punch', 'horaire', 'check', 'mouvement', 'temps', 'heure'])), None)
+            name_col = next((c for c in df.columns if any(k in c for k in ['name', 'employee', 'nom', 'user', 'id', 'person'])), None)
+            date_col = next((c for c in df.columns if any(k in c for k in ['date', 'time', 'punch', 'horaire', 'check', 'mouvement'])), None)
             
-            if name_col_idx is None: name_col_idx = 1 if len(norm_cols) > 1 else 0
-            if date_col_idx is None: date_col_idx = 3 if len(norm_cols) > 3 else 1
+            if not name_col or not date_col:
+                name_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
+                date_col = df.columns[3] if len(df.columns) > 3 else df.columns[1]
 
-            name_col_name = orig_cols[name_col_idx]
-            date_col_name = orig_cols[date_col_idx]
+            if name_col and date_col:
+                for _, row in df.iterrows():
+                    emp_raw = str(row[name_col]).strip()
+                    date_raw = str(row[date_col]).strip()
+                    
+                    if emp_raw.lower() in ['nan', 'null', '', 'none'] or date_raw.lower() in ['nan', 'null', '', 'none']:
+                        continue
+                    
+                    day, m_str, y_str, time_str = None, None, None, None
 
-            for _, row in df.iterrows():
-                emp_raw = str(row[name_col_name]).strip()
-                date_raw = str(row[date_col_name]).strip()
-                
-                if emp_raw.lower() in ['nan', 'null', '', 'none'] or date_raw.lower() in ['nan', 'null', '', 'none']:
+                    machine_match = re.search(r"(\d{4})/(\d{1,2})/(\d{1,2})\s+(\d{1,2}):(\d{2}):?(\d{2})?\s*(AM|PM)?", date_raw, re.IGNORECASE)
+                    test_match = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})\s+(\d{1,2}):(\d{2})", date_raw)
+
+                    if machine_match:
+                        y_str = machine_match.group(1)
+                        m_str = f"{int(machine_match.group(2)):02d}"
+                        day = int(machine_match.group(3))
+                        hr = int(machine_match.group(4))
+                        minute = machine_match.group(5)
+                        ampm = machine_match.group(7)
+                        
+                        if ampm:
+                            ampm = ampm.upper()
+                            if ampm == "PM" and hr < 12: hr += 12
+                            elif ampm == "AM" and hr == 12: hr = 0
+                        time_str = f"{hr:02d}:{minute}"
+
+                    elif test_match:
+                        day = int(test_match.group(1))
+                        m_str = f"{int(test_match.group(2)):02d}"
+                        y_str = test_match.group(3)
+                        time_str = f"{int(test_match.group(4)):02d}:{test_match.group(5)}"
+
+                    if day and m_str == target_m and y_str == target_y:
+                        emp_name_found = re.sub(r'[\"\',]', '', emp_raw).strip()
+                        if emp_name_found not in master_database:
+                            master_database[emp_name_found] = {}
+                        if day not in master_database[emp_name_found]:
+                            master_database[emp_name_found][day] = []
+                        if time_str not in master_database[emp_name_found][day]:
+                            master_database[emp_name_found][day].append(time_str)
+            return master_database
+        except Exception as e:
+            st.error(f"Excel Sheet Parsing Alert: {e}")
+            return master_database
+
+    # --- METHOD B: PLAIN TEXT LOG PARSING CORE (.TXT) ---
+    elif filename.endswith('.txt'):
+        try:
+            raw_data = uploaded_file.read()
+            full_text = raw_data.decode('utf-8', errors='ignore')
+            lines = full_text.splitlines()
+            
+            for line in lines:
+                if not line.strip():
                     continue
                 
                 day, m_str, y_str, time_str = None, None, None, None
-
-                # Pattern 1: Standard Machine log formats (YYYY-MM-DD or YYYY/MM/DD)
-                m1 = re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})", date_raw)
-                # Pattern 2: Regional common manual logs (DD-MM-YYYY or DD/MM/YYYY)
-                m2 = re.search(r"(\d{1,2})[-/](\d{1,2})[-/](\d{4})\s+(\d{1,2}):(\d{2})", date_raw)
-
-                if m1:
-                    y_str = m1.group(1)
-                    m_str = f"{int(m1.group(2)):02d}"
-                    day = int(m1.group(3))
-                    time_str = f"{int(m1.group(4)):02d}:{m1.group(5)}"
-                elif m2:
-                    day = int(m2.group(1))
-                    m_str = f"{int(m2.group(2)):02d}"
-                    y_str = m2.group(3)
-                    time_str = f"{int(m2.group(4)):02d}:{m2.group(5)}"
-
-                if day and m_str == target_m_str and y_str == target_y_str:
-                    emp_name_found = re.sub(r'[\"\',]', '', emp_raw).strip()
-                    if emp_name_found not in master_database:
-                        master_database[emp_name_found] = {}
-                    if day not in master_database[emp_name_found]:
-                        master_database[emp_name_found][day] = []
-                    if time_str not in master_database[emp_name_found][day]:
-                        master_database[emp_name_found][day].append(time_str)
-                        
-            return master_database
-        except Exception as e:
-            st.error(f"Excel Parsing Alert: {e}")
-            return master_database
-
-    # --- METHOD B & C: TEXT & PDF PROCESSING FALLBACKS ---
-    else:
-        try:
-            lines = []
-            if filename.endswith('.txt'):
-                raw_data = uploaded_file.read()
-                full_text = raw_data.decode('utf-8', errors='ignore')
-                lines = full_text.splitlines()
-            else:
-                reader = PdfReader(uploaded_file)
-                full_text = ""
-                for page in reader.pages:
-                    full_text += (page.extract_text() or "") + "\n"
-                lines = full_text.split("\n")
-            
-            for line in lines:
-                if not line.strip(): continue
                 
-                day, m_str, y_str, time_str = None, None, None, None
-                m1 = re.search(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})", line)
-                m2 = re.search(r"(\d{1,2})[-/](\d{1,2})[-/](\d{4})\s+(\d{1,2}):(\d{2})", line)
+                machine_match = re.search(r"(\d{4})/(\d{1,2})/(\d{1,2})\s+(\d{1,2}):(\d{2}):?(\d{2})?\s*(AM|PM)?", line, re.IGNORECASE)
+                test_match = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})\s+(\d{1,2}):(\d{2})", line)
 
-                matched_str = ""
-                if m1:
-                    y_str = m1.group(1)
-                    m_str = f"{int(m1.group(2)):02d}"
-                    day = int(m1.group(3))
-                    time_str = f"{int(m1.group(4)):02d}:{m1.group(5)}"
-                    matched_str = m1.group(0)
-                elif m2:
-                    day = int(m2.group(1))
-                    m_str = f"{int(m2.group(2)):02d}"
-                    y_str = m2.group(3)
-                    time_str = f"{int(m2.group(4)):02d}:{m2.group(5)}"
-                    matched_str = m2.group(0)
+                if machine_match:
+                    y_str = machine_match.group(1)
+                    m_str = f"{int(machine_match.group(2)):02d}"
+                    day = int(machine_match.group(3))
+                    hr = int(machine_match.group(4))
+                    minute = machine_match.group(5)
+                    ampm = machine_match.group(7)
+                    
+                    if ampm:
+                        ampm = ampm.upper()
+                        if ampm == "PM" and hr < 12: hr += 12
+                        elif ampm == "AM" and hr == 12: hr = 0
+                    time_str = f"{hr:02d}:{minute}"
+                    matched_str = machine_match.group(0)
+                elif test_match:
+                    day = int(test_match.group(1))
+                    m_str = f"{int(test_match.group(2)):02d}"
+                    y_str = test_match.group(3)
+                    time_str = f"{int(test_match.group(4)):02d}:{test_match.group(5)}"
+                    matched_str = test_match.group(0)
 
-                if day and m_str == target_m_str and y_str == target_y_str:
+                if day and m_str == target_m and y_str == target_y:
                     clean_line = line.replace(matched_str, "")
                     clean_line = re.sub(r'[\"\',\t\s\:]+', ' ', clean_line).strip()
-                    emp_name_found = re.sub(r'\b\d{1,2}\b', '', clean_line).strip() 
+                    emp_name_found = re.sub(r'\b\d\b', '', clean_line).strip()
                     
                     if not emp_name_found or len(emp_name_found) < 2:
                         backup_digits = re.findall(r'\b\d+\b', clean_line)
-                        emp_name_found = f"Staff ID: {backup_digits[0]}" if backup_digits else "Unknown Staff"
+                        emp_name_found = f"Staff ID: {backup_digits[0]}" if backup_digits else "Unknown Identity"
                     
                     if emp_name_found not in master_database:
                         master_database[emp_name_found] = {}
@@ -200,34 +208,98 @@ def analyze_master_biometric_log(uploaded_file, target_m, target_y):
                         master_database[emp_name_found][day] = []
                     if time_str not in master_database[emp_name_found][day]:
                         master_database[emp_name_found][day].append(time_str)
+            return master_database
         except Exception as e:
-            st.error(f"File System Parsing Alert: {e}")
+            st.error(f"Text File Parsing Alert: {e}")
+            return master_database
 
-    # Clean and sort hours punch matrix strings sequentially
+    # --- METHOD C: ROBUST COMPILER PDF PARSING CORE (.PDF) ---
+    else:
+        try:
+            reader = PdfReader(uploaded_file)
+            full_text = ""
+            for page in reader.pages:
+                page_text = page.extract_text() or ""
+                if page_text and "\n" not in page_text:
+                    page_text = re.sub(r'(\d{4}/\d{1,2}/\d{1,2})', r'\n\1', page_text)
+                    page_text = re.sub(r'(\d{1,2}/\d{1,2}/\d{4})', r'\n\1', page_text)
+                full_text += page_text + "\n"
+                
+            full_text = full_text.encode('utf-8', errors='ignore').decode('utf-8')
+            lines = full_text.split("\n")
+            
+            for line in lines:
+                day, m_str, y_str, time_str = None, None, None, None
+                
+                machine_match = re.search(r"(\d{4})/(\d{1,2})/(\d{1,2})\s*(\d{1,2}):(\d{2}):?(\d{2})?\s*(AM|PM)?", line, re.IGNORECASE)
+                test_match = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})\s*(\d{1,2}):(\d{2})", line)
+
+                if machine_match:
+                    y_str = machine_match.group(1)
+                    m_str = f"{int(machine_match.group(2)):02d}"
+                    day = int(machine_match.group(3))
+                    hr = int(machine_match.group(4))
+                    minute = machine_match.group(5)
+                    ampm = machine_match.group(7)
+                    
+                    if ampm:
+                        ampm = ampm.upper()
+                        if ampm == "PM" and hr < 12: hr += 12
+                        elif ampm == "AM" and hr == 12: hr = 0
+                    time_str = f"{hr:02d}:{minute}"
+                    matched_str = machine_match.group(0)
+                elif test_match:
+                    day = int(test_match.group(1))
+                    m_str = f"{int(test_match.group(2)):02d}"
+                    y_str = test_match.group(3)
+                    time_str = f"{int(test_match.group(4)):02d}:{test_match.group(5)}"
+                    matched_str = test_match.group(0)
+
+                if day and m_str == target_m and y_str == target_y:
+                    clean_line = line.replace("OUR COMPANY", "").replace("COMPANY", "").replace(matched_str, "")
+                    clean_line = re.sub(r'[\"\',]', '', clean_line).strip()
+                    
+                    emp_name_found = re.sub(r'\b\d\b', '', clean_line).strip() 
+                    
+                    if ":" in emp_name_found:
+                        emp_name_found = emp_name_found.split(":")[0].strip()
+                    
+                    if not emp_name_found or len(emp_name_found) < 2:
+                        backup_digits = re.findall(r'\b\d+\b', clean_line)
+                        emp_name_found = backup_digits[0] if backup_digits else "Unknown Staff"
+                    
+                    if emp_name_found not in master_database:
+                        master_database[emp_name_found] = {}
+                    if day not in master_database[emp_name_found]:
+                        master_database[emp_name_found][day] = []
+                    if time_str not in master_database[emp_name_found][day]:
+                        master_database[emp_name_found][day].append(time_str)
+                          
+        except Exception as e:
+            st.error(f"PDF Engine parsing alert: {e}")
+            
     for emp in list(master_database.keys()):
-        for d in list(master_database[emp].keys()):
-            master_database[emp][d] = sorted(list(set(master_database[emp][d])))
+        for day in list(master_database[emp].keys()):
+            master_database[emp][day] = sorted(list(set(master_database[emp][day])))
             
     return master_database
 
 # ----------------------------------------------------
 # MAIN DASHBOARD INTERFACE
 # ----------------------------------------------------
-st.subheader("1. File Ingestion Setup")
+st.subheader("📁 1. File Ingestion Setup")
 uploaded_file = st.file_uploader("Drop machine log PDF report, Excel logs, or plain Text dumps here", type=["pdf", "xlsx", "xls", "txt"])
 
-parsed_master_db = analyze_master_biometric_log(uploaded_file, month_int, year_int)
+parsed_master_db = analyze_master_biometric_log(uploaded_file, target_period)
 
 st.markdown("---")
-st.subheader("2. Target Employee Management")
+st.subheader("👤 2. Target Employee Management")
 
-# Check database content to unlock dynamic auto-population
-available_employees = sorted(list(parsed_master_db.keys())) if parsed_master_db else []
+default_name_value = ""
+if parsed_master_db:
+    default_name_value = sorted(list(parsed_master_db.keys()))[0]
 
-if available_employees:
-    selected_employee_key = st.selectbox("👤 Detected Employees:", available_employees)
-else:
-    selected_employee_key = st.text_input("👤 Employee Name Manual Override:", value="Aymen Laamri")
+selected_employee_key = st.text_input("👤 Employee Name:", value=default_name_value)
 
 col_e1, col_e2 = st.columns(2)
 with col_e1:
@@ -236,6 +308,9 @@ with col_e2:
     advance_pay = st.number_input("Advance Deductions (DA)", min_value=0.0, value=0.0, step=500.0)
 
 selected_employee_logs = parsed_master_db.get(selected_employee_key, {})
+if not selected_employee_logs and parsed_master_db:
+    first_file_key = sorted(list(parsed_master_db.keys()))[0]
+    selected_employee_logs = parsed_master_db.get(first_file_key, {})
 
 structured_data = {}
 for d in range(1, num_days_in_month + 1):
@@ -265,12 +340,15 @@ for d in range(1, num_days_in_month + 1):
 # INTERACTIVE DATA MATRIX
 # ----------------------------------------------------
 st.markdown("---")
-st.subheader("3. 📊 Review Logs & Modify Row Profiles")
+st.subheader("📅 3. Review Logs & Modify Row Profiles")
 
 initial_rows = []
 for d in range(1, num_days_in_month + 1):
     day_profile = structured_data[d]
-    date_label = get_calendar_label(d, month_int, year_int)
+    try:
+        date_label = get_calendar_label(d, month_int, year_int)
+    except:
+        date_label = f"{d:02d}/{month_int:02d}"
         
     initial_rows.append({
         "Date": date_label,
@@ -303,10 +381,10 @@ edited_df = st.data_editor(
 # LIVE FINANCIAL CALCULATION PREVIEW ENGINE
 # ----------------------------------------------------
 st.markdown("---")
-st.subheader("4. 💵 Live Calculation Summary Table")
+st.subheader("💵 4. Live Calculation Summary Table")
 
-daily_rate = base_salary / float(num_days_in_month) if num_days_in_month > 0 else 0.0
-hourly_rate = daily_rate / shift_hours if shift_hours > 0 else 0.0
+daily_rate = base_salary / float(num_days_in_month)
+hourly_rate = daily_rate / shift_hours
 
 calculated_preview_rows = []
 final_attendance_profile = {}
@@ -347,6 +425,7 @@ for idx, row in edited_df.iterrows():
     hours_worked = 0.0
     overtime_hours = 0.0
     day_earnings = 0.0
+    
     penalty = 0.0
     late_penalty = 0.0
     day_bonus = 0.0
@@ -393,9 +472,8 @@ for idx, row in edited_df.iterrows():
             day_earnings = -penalty
 
     if consecutive_work_days == 7:
-        if bonus_rule > 0.0:
-            day_bonus = (daily_rate * bonus_rule)
-            day_earnings += day_bonus
+        day_bonus = (daily_rate * bonus_rule)
+        day_earnings += day_bonus
         consecutive_work_days = 0
 
     total_pay += day_earnings
@@ -404,10 +482,12 @@ for idx, row in edited_df.iterrows():
     total_hours_worked += hours_worked
     total_overtime_hours += overtime_hours
     
+    info_label = status
+
     final_attendance_profile[day_num] = {
         "DateText": date_string, "ClockIn": c_in, "LunchOut": l_out, "LunchIn": l_in, "ClockOut": c_out,
         "HoursWorked": f"{hours_worked:.1f}", "Overtime": f"{overtime_hours:.1f}", "Bonus": f"{day_bonus:.2f}",
-        "Penalty": f"{penalty:.2f}", "StatusText": status, "NetEarnings": f"{day_earnings:.2f}"
+        "Penalty": f"{penalty:.2f}", "StatusText": info_label, "NetEarnings": f"{day_earnings:.2f}"
     }
     
     calculated_preview_rows.append({
@@ -420,17 +500,17 @@ st.dataframe(df_financial_verification, use_container_width=True, height=380, hi
 
 net_salary = total_pay - advance_pay
 col_m1, col_m2, col_m3 = st.columns(3)
-with col_m1: st.metric("Gross Earnings (Inc. Bonuses)", f"{total_pay:.2f} DA")
-with col_m2: st.metric("Advances / Deductions", f"-{advance_pay:.2f} DA")
-with col_m3: st.metric("Net Salary Pay-Out", f"{net_salary:.2f} DA")
+with col_m1: st.metric("💰 Gross Earnings (Inc. Bonuses)", f"{total_pay:.2f} DA")
+with col_m2: st.metric("📉 Advances / Deductions", f"-{advance_pay:.2f} DA")
+with col_m3: st.metric("✅ Net Salary Pay-Out", f"{net_salary:.2f} DA")
 
 # ----------------------------------------------------
-# EXPORT EXECUTIVE LEDGER
+# EXPORT EXECUTIVE LEDGER WITH EDGE-PINNED STYLING
 # ----------------------------------------------------
 st.markdown("---")
-st.subheader("5. Export Final Corporate Ledger Document")
+st.subheader("📥 5. Export Final Corporate Ledger Document")
 
-if st.button("Compile & Print Final PDF Statement", type="primary"):
+if st.button("🖨️ Compile & Print Final PDF Statement", type="primary"):
     pdf_rows = []
     for d in sorted(final_attendance_profile.keys()):
         p = final_attendance_profile[d]
@@ -470,10 +550,10 @@ if st.button("Compile & Print Final PDF Statement", type="primary"):
     story.append(Paragraph("<b>Employee Profile Details</b>", section_style))
     
     emp_info_data = [
-        [Paragraph("Employee Identity:", label_style), Paragraph(selected_employee_key, val_style)],
-        [Paragraph("Accounting Period:", label_style), Paragraph(f"{selected_month_name} {selected_year}", val_style)],
-        [Paragraph("Base Salary Standard:", label_style), Paragraph(f"{base_salary:.2f} DA", val_style)],
-        [Paragraph("Metrics Profile:", label_style), Paragraph(f"{shift_hours} Hours Per Shift / {shift_start_str} Entry", val_style)]
+        [Paragraph("Employee Target Identity:", label_style), Paragraph(selected_employee_key, val_style)],
+        [Paragraph("Statement Accounting Period:", label_style), Paragraph(f"{selected_month_name} {selected_year} ({target_period})", val_style)],
+        [Paragraph("Contractual Base Salary Standard:", label_style), Paragraph(f"{base_salary:.2f} DA", val_style)],
+        [Paragraph("Metrics Profile Standard:", label_style), Paragraph(f"{shift_hours} Hours Per Shift / 9:00 AM Entry", val_style)]
     ]
     info_table = Table(emp_info_data, colWidths=[180, 370])
     info_table.setStyle(TableStyle([
@@ -484,7 +564,7 @@ if st.button("Compile & Print Final PDF Statement", type="primary"):
     
     story.append(Paragraph("<b>Financial Accounting Summary Matrix</b>", section_style))
     summary_data = [
-        [Paragraph("Payroll Component Matrix", matrix_header_style), Paragraph("Value", matrix_header_style), Paragraph("Payroll Component Matrix", matrix_header_style), Paragraph("Value", matrix_header_style)],
+        [Paragraph("Payroll Component Matrix", matrix_header_style), Paragraph("Statement Metric Value", matrix_header_style), Paragraph("Payroll Component Matrix", matrix_header_style), Paragraph("Statement Metric Value", matrix_header_style)],
         [Paragraph("Calculated Hourly Rate", matrix_label_style), Paragraph(f"{hourly_rate:.2f} DA", matrix_label_style), Paragraph("Total Attendance Penalty", matrix_label_style), Paragraph(f"{total_all_penalty:.2f} DA", matrix_label_style)],
         [Paragraph("Total Work Hours Logged", matrix_label_style), Paragraph(f"{total_hours_worked:.1f} Hrs", matrix_label_style), Paragraph("Base Advance Reductions", matrix_label_style), Paragraph(f"{advance_pay:.2f} DA", matrix_label_style)],
         [Paragraph("Total Overtime Logged", matrix_label_style), Paragraph(f"{total_overtime_hours:.1f} Hrs", matrix_label_style), Paragraph("Total Statement Deductions", matrix_label_style), Paragraph(f"{(total_all_penalty+advance_pay):.2f} DA", matrix_label_style)],
@@ -501,7 +581,11 @@ if st.button("Compile & Print Final PDF Statement", type="primary"):
         ('BOX', (2,4), (3,4), 2, colors.HexColor("#16A34A"))
     ]))
     story.append(summary_table)
-    story.append(Spacer(1, 140))
+    
+    story.append(Spacer(1, 180))
+    
+    sig_label_style = ParagraphStyle('SigLabel', fontName='Helvetica-Bold', fontSize=10, textColor=colors.HexColor("#2D3748"))
+    sub_text_style = ParagraphStyle('SubText', fontName='Helvetica', fontSize=8, textColor=colors.HexColor("#718096"))
     
     sig_data = [
         [Paragraph("Prepared By:", sig_label_style), Paragraph("Verified & Approved By:", sig_label_style)],
@@ -514,6 +598,7 @@ if st.button("Compile & Print Final PDF Statement", type="primary"):
         ('ALIGN', (0,0), (-1,-1), 'LEFT'), ('VALIGN', (0,0), (-1,-1), 'BOTTOM'), ('PADDING', (0,0), (-1,-1), 4)
     ]))
     story.append(sig_table)
+    
     story.append(PageBreak())
     
     story.append(Paragraph(f"<b>Itemized Daily Biometric Log — Staff: {selected_employee_key}</b>", section_style))
@@ -536,12 +621,24 @@ if st.button("Compile & Print Final PDF Statement", type="primary"):
         ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor("#F7FAFC")]),
     ]))
     story.append(report_table)
+    story.append(Spacer(1, 12))
+    
+    bottom_summary_data = [
+        [Paragraph("<b>Calculated Hourly Salary:</b>", normal_style), Paragraph(f"{hourly_rate:.2f} DA / Hr", normal_style), Paragraph("<b>Final Net Salary Payout:</b>", ParagraphStyle('B', fontName='Helvetica-Bold', fontSize=9.5)), Paragraph(f"<b>{net_salary:.2f} DA</b>", ParagraphStyle('G', fontName='Helvetica-Bold', fontSize=9.5, textColor=colors.HexColor("#16A34A")))]
+    ]
+    bottom_table = Table(bottom_summary_data, colWidths=[150, 120, 140, 140])
+    bottom_table.setStyle(TableStyle([
+        ('BACKGROUND', (2,0), (3,0), colors.HexColor("#F0FDF4")), ('PADDING', (0,0), (-1,-1), 8), ('BOX', (2,0), (3,0), 1.2, colors.HexColor("#16A34A")) 
+    ]))
+    story.append(bottom_table)
     
     doc.build(story)
     
+    st.success(f"✨ Premium 2-Page Ledger Compiled Successfully: '{filename}'")
+    
     with open(filename, "rb") as pdf_file:
         st.download_button(
-            label="📥 Download Executive PDF Statement",
+            label="📥 Download Upgraded Executive PDF Statement",
             data=pdf_file,
             file_name=filename,
             mime="application/pdf"
