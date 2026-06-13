@@ -39,7 +39,7 @@ selected_month_name, selected_month_code = st.sidebar.selectbox(
     "Select Month", months_list, index=10, format_func=lambda x: x[0]
 )
 
-# UPDATED: Extended range to accommodate archive history and future tracking configurations
+# UPDATED: Keeps the expanded flexible year dropdown selection frame
 selected_year = st.sidebar.selectbox(
     "Select Year", 
     ["2024", "2025", "2026", "2027", "2028", "2029", "2030"], 
@@ -59,7 +59,14 @@ shift_start_time = st.sidebar.time_input(
     value=datetime.strptime("09:00", "%H:%M").time()
 )
 shift_hours = st.sidebar.radio("Paid Shift Length (Including 1H Paid Break)", [8, 9], index=0)
-bonus_rule = st.sidebar.radio("7-Day Streak Bonus", [1.0, 0.5], format_func=lambda x: f"+{x} Day Pay")
+
+# UPDATED: Added 0.0 Option to disable consecutive 7/7 day shift bonuses
+bonus_rule = st.sidebar.radio(
+    "7-Day Streak Bonus", 
+    [1.0, 0.5, 0.0], 
+    index=2,  # Defaults to 0.0 (No Bonus) 
+    format_func=lambda x: f"+{x} Day Pay" if x > 0 else "0.0 Day Pay (No Bonus)"
+)
 
 shift_start_str = shift_start_time.strftime("%H:%M")
 
@@ -118,9 +125,7 @@ def analyze_master_biometric_log(uploaded_file, target_month_str):
                     
                     day, m_str, y_str, time_str = None, None, None, None
 
-                    # Pattern 1: Machine Standard (YYYY/MM/DD HH:MM:SS AM/PM)
                     machine_match = re.search(r"(\d{4})/(\d{1,2})/(\d{1,2})\s+(\d{1,2}):(\d{2}):?(\d{2})?\s*(AM|PM)?", date_raw, re.IGNORECASE)
-                    # Pattern 2: Manual Test Standard (DD/MM/YYYY HH:MM)
                     test_match = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})\s+(\d{1,2}):(\d{2})", date_raw)
 
                     if machine_match:
@@ -260,7 +265,6 @@ def analyze_master_biometric_log(uploaded_file, target_month_str):
                     clean_line = re.sub(r'[\"\',]', '', clean_line).strip()
                     emp_name_found = re.sub(r'\b\d\b', '', clean_line).strip() 
                     
-                    # Target layout fix for specific clipped PDF formats
                     if ":" in emp_name_found:
                         emp_name_found = emp_name_found.split(":")[0].strip()
                     
@@ -278,7 +282,6 @@ def analyze_master_biometric_log(uploaded_file, target_month_str):
         except Exception as e:
             st.error(f"PDF Engine parsing alert: {e}")
             
-    # Universal Sort Cleanup Pass
     for emp in list(master_database.keys()):
         for day in list(master_database[emp].keys()):
             master_database[emp][day] = sorted(list(set(master_database[emp][day])))
@@ -302,7 +305,6 @@ if parsed_master_db:
 
 selected_employee_key = st.text_input("👤 Employee Name:", value=default_name_value)
 
-# Profile configurations
 col_e1, col_e2 = st.columns(2)
 with col_e1:
     base_salary = st.number_input("Base Monthly Salary (DA)", min_value=0.0, value=40000.0, step=500.0)
@@ -472,9 +474,11 @@ for idx, row in edited_df.iterrows():
             penalty = daily_rate * 0.5
             day_earnings = -penalty
 
+    # Executed if consecutive streak criteria is met and bonus configuration is active (> 0)
     if consecutive_work_days == 7:
-        day_bonus = (daily_rate * bonus_rule)
-        day_earnings += day_bonus
+        if bonus_rule > 0.0:
+            day_bonus = (daily_rate * bonus_rule)
+            day_earnings += day_bonus
         consecutive_work_days = 0
 
     total_pay += day_earnings
@@ -586,7 +590,6 @@ if st.button("Compile & Print Final PDF Statement", type="primary"):
     ]))
     story.append(summary_table)
     
-    # Precise Spacer pushes the verification cards right onto the bottom baseline grid 
     story.append(Spacer(1, 180))
     
     sig_label_style = ParagraphStyle('SigLabel', fontName='Helvetica-Bold', fontSize=10, textColor=colors.HexColor("#2D3748"))
