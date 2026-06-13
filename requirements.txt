@@ -3,4 +3,4 @@ pandas
 pypdf
 reportlab
 xlrd>=2.0.1
-openpyxl
+openpyxl>=3.1.0
